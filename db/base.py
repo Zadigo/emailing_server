@@ -6,7 +6,7 @@ from functools import cached_property
 
 import psycopg2
 
-
+# https://www.postgresql.org/docs/current/datatype.html
 # https://www.digitalocean.com/community/tutorials/how-to-use-a-postgresql-database-in-a-flask-application
 
 
@@ -16,6 +16,10 @@ class Field:
     max_length: int = 100
     var_char: bool = False
     not_null: bool = False
+    integer: bool = False
+    decimal: bool = False
+    boolean: bool = False
+    default: str | bool | list | int = None
     primary_key: bool = False
 
     def __str__(self):
@@ -34,6 +38,30 @@ class Field:
 @dataclass
 class CharField(Field):
     var_char: bool = True
+
+
+@dataclass
+class IntegerField(Field):
+    integer: int = True
+
+
+@dataclass
+class BooleanField(Field):
+    boolean: bool = True
+
+
+class BaseRelationship:
+    is_relationship = True
+
+
+@dataclass
+class ForeignKey(BaseRelationship):
+    model: type
+
+
+@dataclass
+class ManyToMany(BaseRelationship):
+    model: type
 
 
 class SQL:
@@ -82,6 +110,7 @@ class SQL:
 
 
 class Table(SQL):
+    alter_table = "ALTER TABLE {name}"
     table_exists = "SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename={name})"
 
     def __init__(self, name):
@@ -89,8 +118,9 @@ class Table(SQL):
         self.table_name = name
         self._cached_fields = []
         self.field_map = OrderedDict()
+        self.relationship_field_map = OrderedDict()
 
-    def __str__(self):
+    def __repr__(self):
         return f'<Table [{self.table_name}]>'
 
     @property
@@ -102,6 +132,10 @@ class Table(SQL):
     @cached_property
     def field_names(self):
         return list(map(lambda x: x.name, self._cached_fields))
+
+    @property
+    def has_relationships(self):
+        return len(self.relationship_field_map.keys()) > 0
 
     def check_fields(self, fields):
         errors = []
@@ -116,18 +150,40 @@ class Table(SQL):
     def get_sql_maps(self, fields):
         sql_maps = []
         for field in fields:
-            self.field_map[field.name] = field
-            sql_maps.append(self.prepare_field(field))
+            is_relationship_field = getattr(field, 'is_relationship', False)
+            if is_relationship_field:
+                name = f'{self.table_name}_{field.model.model_name}'
+                self.relationship_field_map[name] = field
+            else:
+                self.field_map[field.name] = field
+                sql_maps.append(self.prepare_field(field))
         return sql_maps
 
     def prepare_field(self, field):
         sql_map = [field.name]
-        return self.add_constraints(field, sql_map)
+        return self.add_arguments(field, sql_map)
 
-    def add_constraints(self, field, sql_map):
+    def add_constraints(self, sql_map, foreign_key=True):
+        constraint_map = []
+        if foreign_key:
+            foreign_key_sql = "{field_name}_id INTEGER REFERENCES {reference_table}({field_name}_id)"
+            constraint_map.append(foreign_key_sql)
+        # if foreign_key:
+        #     constraint_map.append('ADD CONSTRAINT {constraint_name}')
+        #     foreign_key_sql = "FOREIGN KEY ({field_name}_id) REFERENCES {reference_table} ({field_name}_id)"
+        #     constraint_map.append(foreign_key_sql)
+        sql_map.append(constraint_map)
+
+    def add_arguments(self, field, sql_map):
         if field.var_char:
             max_length_sql = f'varchar({field.max_length})'
             sql_map.append(max_length_sql)
+        elif field.integer:
+            sql_map.append('integer')
+        elif field.decimal:
+            sql_map.append('decimal')
+        elif field.boolean:
+            sql_map.append('boolean')
 
         if field.not_null:
             sql_map.append('NOT NULL')
@@ -136,17 +192,28 @@ class Table(SQL):
             sql_map.append('serial')
             sql_map.append('PRIMARY KEY')
 
+        if field.default is not None:
+            default_sql = f'DEFAULT {self.quote(field.default)}'
+            sql_map.append(default_sql)
+
         return sql_map
 
     def new_table_sql(self, fields=[]):
         self.check_fields(fields)
         sql_maps = self.get_sql_maps(fields)
-        arguments = self.join_partials(sql_maps)
 
-        partial_sql = self.create_table.format(
-            name=self.table_name,
-            fields=arguments
-        )
+        sql_arguments = {'name': self.table_name}
+        if self.has_relationships:
+            self.add_constraints(sql_maps)
+            arguments = self.join_partials(sql_maps)
+            # TODO: Create the field_id reference in the other table
+            # and get the reference table
+            arguments = arguments.format(field_name='b', reference_table='a')
+        else:
+            arguments = self.join_partials(sql_maps)
+
+        sql_arguments.update({'fields': arguments})
+        partial_sql = self.create_table.format(**sql_arguments)
         return self.finalize_sql(partial_sql)
 
     def insert_in_table_sql(self, values):
@@ -195,19 +262,6 @@ class Database:
         connection = self.get_connection
         return connection, connection.cursor()
 
-    # def __call__(self, table):
-    #     errors = []
-    #     for name, fields in table.items():
-    #         if not isinstance(fields, list):
-    #             errors.append(name)
-
-    #     if errors:
-    #         raise ValueError('Second item should be a list')
-
-    #     for name, fields in table.items():
-    #         self.create_table(name, fields)
-    #     return self
-
     def _execute_cursor(self, sql):
         connection, cursor = self.cursor
         try:
@@ -226,15 +280,16 @@ class Database:
 
     def _create_table(self, name, fields):
         instance = Table(name)
-        self.tables[instance.table_name] = instance
-        sql = instance.new_table_sql(fields)
         try:
-            self._execute_cursor(sql)
+            sql = instance.new_table_sql(fields)
+            # self._execute_cursor(sql)
         except psycopg2.errors.DuplicateTable as e:
             # If the table exists already,
             # just silently fail the creation
             # process
             pass
+        else:
+            self.tables[instance.table_name] = instance
 
     def insert_into_table(self, name, values):
         try:
@@ -290,15 +345,19 @@ class BaseModel:
 
     def __init__(self, name, fields):
         self.fields = fields
-        self.model_name = name
+        self.model_name = str(name).lower()
+        self.verbose_model_name = self.model_name.title()
         self._default_manager = None
         self._connection = database
         self._cursor = None
 
         if 'id' not in fields:
-            fields.append(Field('id', primary_key=True))
+            fields.insert(0, Field('id', primary_key=True))
 
         self._connection._create_table(name, fields)
+
+    def __repr__(self):
+        return f'<{self.verbose_model_name}>'
 
     @property
     def get_table(self):
@@ -331,11 +390,39 @@ class BaseModel:
         return self.queryset_class(self)
 
 
-campaigns = BaseModel('campaigns', [
-    Field('name', var_char=True, not_null=True)
+country = BaseModel('country', [
+    CharField('name')
 ])
+
+
+cars = BaseModel('cars', [
+    ForeignKey(country)
+])
+
+# campaigns = BaseModel('campaigns', [
+#     Field('name', var_char=True, not_null=True),
+#     CharField('reference'),
+#     IntegerField('number_of_steps'),
+#     IntegerField('minutes'),
+#     BooleanField('active')
+# ])
+
+# emails = BaseModel('emails', [
+#     # IntegerField('campaign'),
+#     ForeignKey(campaigns),
+#     IntegerField('email'),
+#     IntegerField('current_step')
+# ])
+
+# steps = BaseModel('steps', [
+#     # IntegerField('emails'),
+#     ForeignKey(emails),
+#     IntegerField('value'),
+#     IntegerField('days')
+# ])
+
 # campaigns.create(name='Kendall Jenner')
-print(campaigns.all())
+# print(campaigns.all())
 # print(os.getenv('DB_PASSWORD'))
 
 # d.create_table(
