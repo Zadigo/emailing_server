@@ -9,28 +9,14 @@ from dataclasses import dataclass, field
 import pytz
 import redis
 
+from emailing_server import logger
+from emailing_server.connections import redis_connection
+
 # POST http://api.example.com -> flask (email) -> redis
 # WHILE server <-> redis -> IF campaigns -> Send email
 
 
-class Logger:
-    def __init__(self):
-        instance = logging.Logger('Emailing')
-        instance.setLevel(logging.DEBUG)
-        handler = logging.StreamHandler()
-        instance.addHandler(handler)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s: %(message)s',
-            datefmt='%Y-%m-%d %H:%M'
-        )
-        handler.setFormatter(formatter)
-        self.instance = instance
-
-    def debug(self, message, *args, **kwargs):
-        return self.instance.debug(message, *args, **kwargs)
-
-
-logger = Logger()
+redis_conn = redis_connection()
 
 
 class ModelMixin:
