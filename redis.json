@@ -1,0 +1,31 @@
+[
+    {
+        "id": 1,
+        "reference": "camp_xie23ffz",
+        "name": "Some campaign",
+        "number_of_steps": 2,
+        "minutes": 2,
+        "active": true,
+        "emails": [
+            {
+                "id": 1,
+                "email": "test@gmail.com",
+                "current_step": 1,
+                "steps": [
+                    {
+                        "id": 1,
+                        "value": 1,
+                        "send_date": "2023-08-28 22:12:13.053752",
+                        "days": 0
+                    },
+                    {
+                        "id": 2,
+                        "value": 2,
+                        "send_date": "2023-08-29 22:12:13.053752",
+                        "days": 5
+                    }
+                ]
+            }
+        ]
+    }
+]
