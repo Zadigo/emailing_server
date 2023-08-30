@@ -66,6 +66,7 @@ class ManyToMany(BaseRelationship):
 
 class SQL:
     select = 'SELECT {fields} FROM {name}'
+    alter_table = "ALTER TABLE {name}"
     drop_table = 'DROP TABLE IF EXISTS {name}'
     create_table = 'CREATE TABLE IF NOT EXISTS {name} ({fields})'
     insert_into_table = 'INSERT INTO {name} ({fields}) VALUES ({values})'
@@ -107,6 +108,37 @@ class SQL:
             partials.append(partial)
 
         return ', '.join(partials)
+
+
+class OneToOneRelationship(SQL):
+    def __init__(self, table, field):
+        self.table = table
+        self.reference_table = field.model.model_name
+        self.reference_field = f'{field.model.model_name}_id'
+        self.field = field
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__}[{self.table} -> {self.reference_table}]>'
+
+    def add_constraints(self, sql_map, foreign_key=True):
+        if foreign_key:
+            foreign_key_sql = "{field_name} INTEGER REFERENCES {reference_table}({field_name})"
+            foreign_key_sql = foreign_key_sql.format(
+                field_name=self.reference_field, 
+                reference_table=self.reference_table
+            )
+            sql_map.append([foreign_key_sql])
+
+        # if foreign_key:
+        #     constraint_map.append('ADD CONSTRAINT {constraint_name}')
+        #     foreign_key_sql = "FOREIGN KEY ({field_name}_id) REFERENCES {reference_table} ({field_name}_id)"
+        #     constraint_map.append(foreign_key_sql)
+
+    def reference_field_sql(self):
+        # ALTER TABLE orders
+        # ADD CONSTRAINT fk_customer
+        # FOREIGN KEY(customer_id) REFERENCES customers(customer_id)
+        pass
 
 
 class Table(SQL):
@@ -152,17 +184,6 @@ class Table(SQL):
         sql_map = [field.name]
         return self.add_arguments(field, sql_map)
     
-    def add_constraints(self, sql_map, foreign_key=True):
-        constraint_map = []
-        if foreign_key:
-            foreign_key_sql = "{field_name}_id INTEGER REFERENCES {reference_table}({field_name}_id)"
-            constraint_map.append(foreign_key_sql)
-        # if foreign_key:
-        #     constraint_map.append('ADD CONSTRAINT {constraint_name}')
-        #     foreign_key_sql = "FOREIGN KEY ({field_name}_id) REFERENCES {reference_table} ({field_name}_id)"
-        #     constraint_map.append(foreign_key_sql)
-        sql_map.append(constraint_map)
-
     def add_arguments(self, field, sql_map):
         if field.var_char:
             max_length_sql = f'varchar({field.max_length})'
@@ -194,8 +215,7 @@ class Table(SQL):
             if is_relationship_field:
                 # e.g. table: cars -> reference table: country :: cars_country
                 name = f'{self.table_name}_{field.model.model_name}'
-                self.relationships.append((self.table_name, field.model.model_name))
-                self.relationship_field_map[name] = field
+                self.relationship_field_map[name] = OneToOneRelationship(self.table_name, field)
             else:
                 self.field_map[field.name] = field
                 sql_maps.append(self.prepare_field(field))
@@ -207,18 +227,10 @@ class Table(SQL):
 
         sql_arguments = {'name': self.table_name}
         if self.has_relationships:
-            self.add_constraints(sql_maps)
-            arguments = self.join_partials(sql_maps)
-            # TODO: Create the field_id reference in the other table
-            # and get the reference table
-            # e.g. table: cars -> reference table: country
-            # country_id INTEGER REFERENCES coutries(country_id)
-            for key, field in self.relationship_field_map.items():
-                table_name, reference_table_name = key.split('_')
-                arguments = arguments.format(field_name=reference_table_name, reference_table=reference_table_name)
-        else:
-            arguments = self.join_partials(sql_maps)
+            for key, relationship in self.relationship_field_map.items():
+                relationship.add_constraints(sql_maps)
 
+        arguments = self.join_partials(sql_maps)
         sql_arguments.update({'fields': arguments})
         partial_sql = self.create_table.format(**sql_arguments)
         return self.finalize_sql(partial_sql)
