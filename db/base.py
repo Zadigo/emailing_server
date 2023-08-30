@@ -118,6 +118,7 @@ class Table(SQL):
         self.table_name = name
         self._cached_fields = []
         self.field_map = OrderedDict()
+        self.relationships = []
         self.relationship_field_map = OrderedDict()
 
     def __repr__(self):
@@ -147,22 +148,10 @@ class Table(SQL):
             raise ValueError('Field should be a dataclass')
         self._cached_fields = fields
 
-    def get_sql_maps(self, fields):
-        sql_maps = []
-        for field in fields:
-            is_relationship_field = getattr(field, 'is_relationship', False)
-            if is_relationship_field:
-                name = f'{self.table_name}_{field.model.model_name}'
-                self.relationship_field_map[name] = field
-            else:
-                self.field_map[field.name] = field
-                sql_maps.append(self.prepare_field(field))
-        return sql_maps
-
     def prepare_field(self, field):
         sql_map = [field.name]
         return self.add_arguments(field, sql_map)
-
+    
     def add_constraints(self, sql_map, foreign_key=True):
         constraint_map = []
         if foreign_key:
@@ -197,6 +186,20 @@ class Table(SQL):
             sql_map.append(default_sql)
 
         return sql_map
+    
+    def get_sql_maps(self, fields):
+        sql_maps = []
+        for field in fields:
+            is_relationship_field = getattr(field, 'is_relationship', False)
+            if is_relationship_field:
+                # e.g. table: cars -> reference table: country :: cars_country
+                name = f'{self.table_name}_{field.model.model_name}'
+                self.relationships.append((self.table_name, field.model.model_name))
+                self.relationship_field_map[name] = field
+            else:
+                self.field_map[field.name] = field
+                sql_maps.append(self.prepare_field(field))
+        return sql_maps
 
     def new_table_sql(self, fields=[]):
         self.check_fields(fields)
@@ -208,7 +211,11 @@ class Table(SQL):
             arguments = self.join_partials(sql_maps)
             # TODO: Create the field_id reference in the other table
             # and get the reference table
-            arguments = arguments.format(field_name='b', reference_table='a')
+            # e.g. table: cars -> reference table: country
+            # country_id INTEGER REFERENCES coutries(country_id)
+            for key, field in self.relationship_field_map.items():
+                table_name, reference_table_name = key.split('_')
+                arguments = arguments.format(field_name=reference_table_name, reference_table=reference_table_name)
         else:
             arguments = self.join_partials(sql_maps)
 
@@ -235,7 +242,7 @@ class Table(SQL):
         sql = self.table_exists.format(name=self.quote(self.table_name))
         return self.finalize_sql(sql)
 
-    def select_from_table(self, fields=None):
+    def select_from_table_sql(self, fields=None):
         if fields is None:
             fields = '*'
         sql = self.select.format(fields=fields, name=self.table_name)
@@ -379,7 +386,7 @@ class BaseModel:
         )
 
     def all(self):
-        sql = self.get_table.select_from_table()
+        sql = self.get_table.select_from_table_sql()
         self._cursor = self._connection._execute_cursor(sql)
         return self.queryset_class(self)
 
