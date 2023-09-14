@@ -21,6 +21,8 @@ redis_conn = redis_connection()
 
 class ModelMixin:
     def transform_date(self, d):
+        if d is None:
+            return None
         return datetime.datetime.strptime(d, '%Y-%m-%d %H:%M:%S.%f')
 
 
@@ -60,6 +62,8 @@ class Campaign(ModelMixin):
     name: str
     number_of_steps: int
     minutes: int
+    start_date: str
+    next_date: str = None
     active: bool = False
     emails: list = field(default_factory=list)
 
@@ -74,8 +78,12 @@ class Campaign(ModelMixin):
         return instances
 
     @property
-    def get_date(self):
+    def get_start_date(self):
         return self.transform_date(self.start_date)
+    
+    @property
+    def get_next_date(self):
+        return self.transform_date(self.next_date)
 
 
 def get_date():
@@ -92,13 +100,16 @@ async def main():
     send_emails_every = 2
     next_sending_date = None
 
-    async def read_database():
+    async def read_campaigns():
         with open('redis.json', encoding='utf-8') as f:
             data = json.load(f)
             for campaign in data:
                 instance = Campaign(**campaign)
                 if instance.active:
-                    await campaign_queue.put(instance)
+                    # Put the campaign in the Queue if the
+                    # start date 
+                    if instance.get_start_date > get_date():
+                        await campaign_queue.put(instance)
                 await asyncio.sleep(1)
 
     async def get_emails():
@@ -142,7 +153,7 @@ async def main():
         # Check if there are campaigns
         # in the Redis database and
         # include them in the Queue
-        await read_database()
+        await read_campaigns()
         # When the "campaign_queue" has campaigns,
         # get all the emails and send if necessary
         await asyncio.gather(get_emails(), send_emails())
